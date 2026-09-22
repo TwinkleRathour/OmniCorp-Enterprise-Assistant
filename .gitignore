@@ -1,0 +1,15 @@
+﻿# Python artifacts
+__pycache__/
+*.py[cod]
+*$py.class
+*.env
+.venv/
+venv/
+ENV/
+
+# Streamlit logs
+.streamlit/
+
+# OS specific
+Thumbs.db
+.DS_Store
