@@ -1,7 +1,6 @@
 import streamlit as st
 import traceback
-from azure.identity import ClientSecretCredential
-from azure.ai.projects import AIProjectClient
+from openai import OpenAI
 
 # ----------------- PAGE CONFIGURATION -----------------
 st.set_page_config(
@@ -18,18 +17,27 @@ ENDPOINT = "https://corporateai.services.ai.azure.com/api/projects/CorporateAI"
 MY_AGENT = "OmniCorp-Assistant"
 MY_VERSION = "3"
 
+# The OpenAI-compatible surface of a Foundry project lives at {endpoint}/openai/v1
+BASE_URL = ENDPOINT.rstrip("/") + "/openai/v1"
+
+
 @st.cache_resource
 def get_openai_client():
-    credential = ClientSecretCredential(
-        tenant_id=st.secrets["AZURE_TENANT_ID"],
-        client_id=st.secrets["AZURE_CLIENT_ID"],
-        client_secret=st.secrets["AZURE_CLIENT_SECRET"],
+    """
+    Authenticate with the Foundry PROJECT API KEY instead of an Entra ID token.
+
+    The Entra ID path (managed identity / service principal) was returning an
+    empty-body 403 from the istio gateway. The project API key is a completely
+    separate auth path and does not depend on RBAC role assignments at all.
+
+    The key comes from: Foundry portal -> Manage -> Project details -> API Key
+    """
+    api_key = st.secrets["AZURE_AI_API_KEY"]
+    return OpenAI(
+        api_key=api_key,
+        base_url=BASE_URL,
     )
-    project_client = AIProjectClient(
-        endpoint=ENDPOINT,
-        credential=credential,
-    )
-    return project_client.get_openai_client()
+
 
 client = get_openai_client()
 
@@ -81,7 +89,6 @@ if user_input:
         placeholder.markdown("🔍 *Consulting enterprise knowledge base & tools...*")
 
         try:
-            # Build conversation payload for the agent
             conversation_input = [
                 {"role": m["role"], "content": m["content"]}
                 for m in st.session_state.messages
@@ -98,56 +105,33 @@ if user_input:
                 },
             )
 
-            # Retrieve text response
             reply_text = getattr(response, "output_text", None) or str(response)
 
             placeholder.markdown(reply_text)
             st.session_state.messages.append({"role": "assistant", "content": reply_text})
 
         except Exception as err:
-            # Print the FULL traceback + underlying Azure error details to stdout
-            # so it shows up in `az webapp log tail`. Streamlit only shows the
-            # short repr of the exception in the UI, which hides the actual
-            # resource/permission causing the 403.
             print("=" * 60, flush=True)
             print("AGENT CALL FAILED", flush=True)
             print(traceback.format_exc(), flush=True)
 
-            # OpenAI SDK errors (openai.PermissionDeniedError etc.) expose the
-            # parsed JSON body on `.body`, and the raw httpx response on
-            # `.response`. Note: httpx's `.text` is a PROPERTY, not a method —
-            # calling it as `.text()` raises TypeError and gets swallowed.
-            print("--- err.body (parsed) ---", flush=True)
+            print("--- err.body ---", flush=True)
             try:
                 print(getattr(err, "body", None), flush=True)
             except Exception as e:
                 print(f"(could not read err.body: {e})", flush=True)
 
-            print("--- err.message ---", flush=True)
-            try:
-                print(getattr(err, "message", None), flush=True)
-            except Exception as e:
-                print(f"(could not read err.message: {e})", flush=True)
-
             response_obj = getattr(err, "response", None)
             if response_obj is not None:
-                print("--- response.status_code ---", flush=True)
                 try:
+                    print("--- response.status_code ---", flush=True)
                     print(response_obj.status_code, flush=True)
-                except Exception as e:
-                    print(f"(could not read status_code: {e})", flush=True)
-
-                print("--- response.text (property, not called) ---", flush=True)
-                try:
+                    print("--- response.text ---", flush=True)
                     print(response_obj.text, flush=True)
-                except Exception as e:
-                    print(f"(could not read response.text: {e})", flush=True)
-
-                print("--- response.headers ---", flush=True)
-                try:
+                    print("--- response.headers ---", flush=True)
                     print(dict(response_obj.headers), flush=True)
                 except Exception as e:
-                    print(f"(could not read headers: {e})", flush=True)
+                    print(f"(could not read response details: {e})", flush=True)
             print("=" * 60, flush=True)
 
             placeholder.markdown(f"⚠️ **Error running agent:** `{err}`")
