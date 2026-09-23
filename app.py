@@ -1,5 +1,6 @@
-﻿import streamlit as st
-from azure.identity import DefaultAzureCredential
+import streamlit as st
+import traceback
+from azure.identity import ClientSecretCredential
 from azure.ai.projects import AIProjectClient
 
 # ----------------- PAGE CONFIGURATION -----------------
@@ -19,9 +20,14 @@ MY_VERSION = "3"
 
 @st.cache_resource
 def get_openai_client():
+    credential = ClientSecretCredential(
+        tenant_id=st.secrets["AZURE_TENANT_ID"],
+        client_id=st.secrets["AZURE_CLIENT_ID"],
+        client_secret=st.secrets["AZURE_CLIENT_SECRET"],
+    )
     project_client = AIProjectClient(
         endpoint=ENDPOINT,
-        credential=DefaultAzureCredential(),
+        credential=credential,
     )
     return project_client.get_openai_client()
 
@@ -99,4 +105,49 @@ if user_input:
             st.session_state.messages.append({"role": "assistant", "content": reply_text})
 
         except Exception as err:
+            # Print the FULL traceback + underlying Azure error details to stdout
+            # so it shows up in `az webapp log tail`. Streamlit only shows the
+            # short repr of the exception in the UI, which hides the actual
+            # resource/permission causing the 403.
+            print("=" * 60, flush=True)
+            print("AGENT CALL FAILED", flush=True)
+            print(traceback.format_exc(), flush=True)
+
+            # OpenAI SDK errors (openai.PermissionDeniedError etc.) expose the
+            # parsed JSON body on `.body`, and the raw httpx response on
+            # `.response`. Note: httpx's `.text` is a PROPERTY, not a method —
+            # calling it as `.text()` raises TypeError and gets swallowed.
+            print("--- err.body (parsed) ---", flush=True)
+            try:
+                print(getattr(err, "body", None), flush=True)
+            except Exception as e:
+                print(f"(could not read err.body: {e})", flush=True)
+
+            print("--- err.message ---", flush=True)
+            try:
+                print(getattr(err, "message", None), flush=True)
+            except Exception as e:
+                print(f"(could not read err.message: {e})", flush=True)
+
+            response_obj = getattr(err, "response", None)
+            if response_obj is not None:
+                print("--- response.status_code ---", flush=True)
+                try:
+                    print(response_obj.status_code, flush=True)
+                except Exception as e:
+                    print(f"(could not read status_code: {e})", flush=True)
+
+                print("--- response.text (property, not called) ---", flush=True)
+                try:
+                    print(response_obj.text, flush=True)
+                except Exception as e:
+                    print(f"(could not read response.text: {e})", flush=True)
+
+                print("--- response.headers ---", flush=True)
+                try:
+                    print(dict(response_obj.headers), flush=True)
+                except Exception as e:
+                    print(f"(could not read headers: {e})", flush=True)
+            print("=" * 60, flush=True)
+
             placeholder.markdown(f"⚠️ **Error running agent:** `{err}`")
